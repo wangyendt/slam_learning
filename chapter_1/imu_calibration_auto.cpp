@@ -193,33 +193,116 @@ private:
 
 int main(int argc, char** argv) {
 
-            Eigen::Matrix<float,3,1> acc_mat, gyro_mat;
-            acc_mat << -0.070702,-0.186612,9.726205;
-            gyro_mat << 0.001,0.001,0.001;
+    //给定T_,K_,b,R，G,生成仿真测量数据A
+    /**************************************/
+    Eigen::Matrix<double, 3, 3> T_;
+    T_ << 1, 0.12, 0.08,
+         0, 1, 0.05,
+         0, 0, 1;
+    Eigen::Matrix<double, 3, 3> K_;
+    K_ << 1.03, 0, 0,
+         0, 0.95, 0,
+         0, 0, 1.02;
+    
+    Eigen::Vector3d b_;
+    b_ << 0.21, 0.13, 0.05;
 
-            Eigen::Matrix<float, 3, 3> R, T, K;
-            Eigen::Matrix<float, 3, 1> b_a;
-            Eigen::Matrix<float, 3, 1> b_g;
-            R << 0.999254, 0.0353705, 0.0155279,
-                    -0.0376302, 0.982124, 0.184435,
-                    -0.00872674, -0.184882, 0.982722;
-            T << 1, -0.0218148, -0.00570976,
-                    0, 1, 0.083046,
-                    0, 0, 1;
-            K << 1.00063, 0, 0,
-                    0, 0.975211, 0,
-                    0, 0, 1.01173;
-            b_a << -0.011684, 0.127648, 0.276855;
-            b_g << 0.00383146, 0.00261777, 0.0057976;
-            // Eigen::Map<Eigen::Matrix<float, 3, 1>> acc_mat(new float[3]{accCurX, accCurY, accCurZ});
-            // Eigen::Map<Eigen::Matrix<float, 3, 1>> gyro_mat(new float[3]{gyroCurX, gyroCurY, gyroCurZ});
-            std:: cout << acc_mat <<std::endl;
-            acc_mat = R * T * K * (acc_mat + b_a);
-            gyro_mat = R * (gyro_mat - b_g);
-            std:: cout << R*T*K <<std::endl;
-            std:: cout << b_a <<std::endl;
-            std:: cout << acc_mat + b_a <<std::endl;
-            // std:: cout << acc_mat <<std::endl;
-            // std:: cout << gyro_mat <<std::endl;
-            exit(0);
+    double r[3] = {0.02, 0.03, 0.05};
+    auto r_vec = Eigen::Vector3d(r);
+    Eigen::Matrix<double, 3, 3> R_ = Sophus::SO3d::exp(r_vec).matrix();
+    
+    std::cout << "R : "  << std::endl << R_ << std::endl;
+     
+    // 6面
+    double g = 9.7833;
+    Eigen::Matrix<double, 3, 6> G;
+    G <<   0 ,   0 , 0, 0 ,   g ,-g,
+           0 ,   0 , g, -g,  0, 0,
+           g ,   -g, 0, 0 ,   0, 0;
+
+    std::cout << "G : " << std::endl << G << std::endl;
+
+    // 根据已知数据生成仿真测量数据A
+    Eigen::Matrix<double, 3, 6> A;
+    auto temp = R_*T_*K_;
+    for(int i = 0; i < 6; ++i){
+        A.col(i) = temp.inverse() * G.col(i) - b_;
+    }
+
+    std::cout << "A : " << std::endl << A << std::endl;
+
+    // /**************************************/
+
+    // 实际数据
+    /****************************************/
+    // Eigen::Matrix<double, 3, 6> A;
+    // A << -0.10056209, 0.06355833, -0.08482739, 0.2181346, 9.76441422, -9.79061516,
+    //      -2.86120622 ,2.45145921, 9.75056835,  -9.6468714, 0.1106125, -0.57045186,
+    //      9.46849853, -9.4231117, 0.90939053,  -2.65919393, 0.17637564,-0.13308613;
+    
+    // std::cout << "A : " << std::endl << A << std::endl;
+
+    // double g = 9.7833;
+    // Eigen::Matrix<double, 3, 6> G;
+    // G <<   0 ,   0 , 0, 0 ,   g ,-g,
+    //        0 ,   0 , g, -g,  0, 0,
+    //        g ,   -g, 0, 0 ,   0, 0;
+
+    // std::cout << "G : " << std::endl << G << std::endl;
+
+    /****************************************/
+
+    // Initialize parameters
+    double r_param[3] = {0,0,0};
+    double T_param[3] = {0,0,0};
+    // double K_param[3] = {1,1,1};
+    double K_param[3] = {1.03,0.95,1.02};
+    double b_param[3] = {0,0,0};
+
+    // Define the optimization problem
+    Problem problem;
+    //使用自动微分计算
+    // CostFunction* cost_function =
+    //     new AutoDiffCostFunction<ErrorFunction,18 ,15>(new ErrorFunction(A,G));
+    //使用自己推导的雅克比计算
+    CostFunction* cost_function = new MyCostFunction(A, G);
+    problem.AddResidualBlock(cost_function,nullptr,r_param,T_param,K_param,b_param);
+    problem.SetParameterization(r_param , new SO3LocalParameterization());
+
+    // Run the solver
+    Solver::Options options;
+    options.linear_solver_type = ceres::DENSE_QR;
+    options.minimizer_progress_to_stdout = true;
+    Solver::Summary summary;
+    Solve(options,&problem,&summary);
+
+    std::cout << summary.BriefReport() << "\n";
+    
+    // 输出结果
+    std::cout << "Optimized r:\n";
+    std::cout << r_param[0] << "," << r_param[1] << "," << r_param[2] << std::endl;
+
+    std::cout << "Optimized R:\n";
+    Eigen::Vector3d omega(r_param[0], r_param[1], r_param[2]);
+    Sophus::SO3d R = Sophus::SO3d::exp(omega);
+    std::cout << R.matrix() << "\n";
+
+    std::cout << "Optimized T:\n";
+    Eigen::Matrix3d T;
+    T << 1, T_param[0], T_param[1],
+        0, 1, T_param[2],
+        0, 0, 1;
+    std::cout << T << "\n";
+    std::cout << "Optimized K:\n";
+    Eigen::Matrix3d K;
+    K << K_param[0], 0, 0,
+         0, K_param[1],0,
+         0, 0, K_param[2];
+    std::cout << K << std::endl; 
+
+    std::cout << "Optimized b:\n";
+    auto b = Eigen::Map<Eigen::Vector3d>(b_param);
+    std::cout << b << "\n";
+
+    return 0;
 }
